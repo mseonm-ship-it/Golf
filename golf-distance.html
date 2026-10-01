@@ -22,37 +22,74 @@ h1{font-size:18px;margin:4px 0 12px}
 button{font:inherit;border:0;border-radius:12px;padding:14px;width:100%;font-weight:600;background:var(--ac);color:#fff;margin-top:8px}
 button.alt{background:transparent;color:var(--ac);border:1px solid var(--ac)}
 .row{display:flex;gap:8px}
+input{font:inherit;width:100%;padding:12px;border-radius:12px;border:1px solid var(--ln);background:var(--bg);color:var(--tx);text-align:center;font-size:18px}
+.tabs{display:flex;gap:8px;margin-bottom:12px}.tabs button{margin:0}
 ul{list-style:none;margin:0;padding:0;text-align:left}
 li{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--ln)}
+.cnt{display:flex;align-items:center;justify-content:center;gap:16px}
+.cnt button{width:60px;height:60px;font-size:30px;border-radius:50%;padding:0;margin:0}.cnt button.plus{width:104px;height:104px;font-size:52px}
+.cnt .big{min-width:90px}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.c{border:1px solid var(--ln);border-radius:10px;padding:6px 0;text-align:center}
+.c small{display:block;color:var(--sub);font-size:11px}.c b{font-size:16px}
+.c.on{border-color:var(--ac);background:var(--ac);color:#fff}.c.on small{color:#fff}
 </style>
 </head>
 <body>
-<h1>⛳ 골프 거리 체크</h1>
+<h1>⛳ 골프 체크</h1>
+<div class="tabs"><button id="t1">📏 거리</button><button id="t2" class="alt">📝 스코어</button></div>
+
+<div id="p1">
 <div class="card">
   <div class="big" id="dist">--</div>
-  <div class="unit" id="u">야드</div>
+  <div class="unit">미터 (이동 거리)</div>
+  <div id="remainBox" style="font-size:20px;margin-top:8px" hidden>🚩 핀까지 약 <b id="remain" style="color:var(--ac);font-size:30px"></b> m</div>
   <div class="sub" id="state">GPS 연결 중…</div>
 </div>
 <div class="card">
-  <div class="sub" style="margin:0 0 4px">① 공 앞에서 [기준점 저장] → ② 공 떨어진 곳까지 걸어가서 거리 확인</div>
+  <div class="sub" style="margin:0 0 8px">① 홀 거리 입력 → ② 티에서 [기준점 저장] → ③ 공까지 걸어가면 남은 거리 표시 → ④ 샷할 때 [다음 샷]</div>
+  <input id="hole" type="number" inputmode="numeric" placeholder="핀까지 거리(m) 입력 · 예: 380">
   <button id="set">📍 여기를 기준점으로 저장</button>
-  <div class="row">
-    <button class="alt" id="rec">📝 이 거리 기록</button>
-    <button class="alt" id="unit">m / yd 전환</button>
-  </div>
+  <button id="nx">🏌️ 공 위치 확정 → 여기서 다음 샷</button>
+  <button class="alt" id="rec">📝 이 거리 기록</button>
 </div>
 <div class="card"><div class="sub" style="margin:0 0 6px">최근 기록</div><ul id="log"></ul></div>
+</div>
+
+<div id="p2" hidden>
+<div class="card">
+  <div class="sub" style="margin:0">합계</div>
+  <div style="font-size:28px;font-weight:700" id="tot">0타</div>
+</div>
+<div class="card">
+  <div class="row"><button class="alt" onclick="go(G.cur-1)">◀</button><div style="flex:3;font-size:22px;font-weight:700;align-self:center" id="hn"></div><button class="alt" onclick="go(G.cur+1)">▶</button></div>
+  <div class="row" id="par" style="margin-bottom:12px"></div>
+  <div class="cnt"><button onclick="dec()">−</button><div class="big" id="st">-</div><button class="plus" onclick="inc()">+</button></div>
+  <div class="sub" style="font-size:16px" id="lab"></div>
+  <button onclick="go(G.cur+1)">✅ 홀아웃 → 다음 홀</button>
+</div>
+<div class="card"><div class="grid" id="grid"></div></div>
+<button class="alt" onclick="newRound()">🔄 새 라운드 시작</button>
+</div>
+
 <script>
-let unit="yd",base=null,cur=null,hist=[];
 const $=id=>document.getElementById(id);
+/* 탭 */
+function tab(n){$("p1").hidden=n!==1;$("p2").hidden=n!==2;$("t1").className=n===1?"":"alt";$("t2").className=n===2?"":"alt"}
+$("t1").onclick=()=>tab(1);$("t2").onclick=()=>tab(2);
+
+/* 거리 */
+let base=null,cur=null,hist=[],remain=null;
 try{const s=localStorage.getItem("gd");if(s)hist=JSON.parse(s)}catch(e){}
 function hav(a,b){const R=6371000,r=Math.PI/180,dl=(b.lat-a.lat)*r,dn=(b.lon-a.lon)*r;
 const x=Math.sin(dl/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x))}
-function conv(m){return Math.round(unit==="yd"?m*1.09361:m)}
+function conv(m){return Math.round(m)}
 function render(){
-  $("u").textContent=unit==="yd"?"야드":"미터";
-  if(base&&cur)$("dist").textContent=conv(hav(base,cur));else $("dist").textContent="--";
-  $("log").innerHTML=hist.slice(0,8).map(h=>`<li><span>${h.t}</span><b>${conv(h.m)} ${unit==="yd"?"yd":"m"}</b></li>`).join("")||'<li><span class="sub">아직 기록이 없어요</span></li>';
+  const d=base&&cur?hav(base,cur):null;
+  $("dist").textContent=d!=null?conv(d):"--";
+  $("remainBox").hidden=remain==null;
+  if(remain!=null)$("remain").textContent=Math.max(0,Math.round(remain-(d||0)));
+  $("log").innerHTML=hist.slice(0,8).map(h=>`<li><span>${h.t}</span><b>${conv(h.m)} m</b></li>`).join("")||'<li><span class="sub">아직 기록이 없어요</span></li>';
 }
 function save(){try{localStorage.setItem("gd",JSON.stringify(hist.slice(0,30)))}catch(e){}}
 if(!navigator.geolocation){$("state").textContent="이 브라우저는 위치를 지원하지 않아요"}
@@ -63,10 +100,36 @@ else navigator.geolocation.watchPosition(p=>{
   render();
 },e=>{$("state").textContent="위치 권한을 허용해 주세요 (Safari에서 열어야 해요)"},{enableHighAccuracy:true,maximumAge:1000,timeout:20000});
 $("set").onclick=()=>{if(!cur)return;base={...cur};$("state").textContent="기준점 저장됨 ✅ 이제 이동해 보세요";render()};
+$("hole").oninput=()=>{const v=parseFloat($("hole").value);remain=v>0?v:null;render()};
+$("nx").onclick=()=>{if(!base||!cur)return;if(remain!=null){remain=Math.max(0,remain-hav(base,cur));$("hole").value=Math.round(remain)}
+  base={...cur};$("state").textContent="새 기준점 저장됨 ✅ 샷 후 공까지 걸어가세요";render()};
 $("rec").onclick=()=>{if(!base||!cur)return;const d=new Date();
   hist.unshift({m:hav(base,cur),t:d.getHours()+":"+String(d.getMinutes()).padStart(2,"0")});save();render()};
-$("unit").onclick=()=>{unit=unit==="yd"?"m":"yd";render()};
 render();
+
+/* 스코어 */
+let G={par:Array(18).fill(4),s:Array(18).fill(0),cur:0};
+try{const x=localStorage.getItem("gs");if(x){const o=JSON.parse(x);if(o&&o.par&&o.s&&o.par.length===18&&o.s.length===18)G=o}}catch(e){}
+function sv(){try{localStorage.setItem("gs",JSON.stringify(G))}catch(e){}}
+function fmt(d){return d===0?"E":d>0?"+"+d:""+d}
+function lab(s,p){if(!s)return"샷을 칠 때마다 ➕를 눌러요";if(s===1)return"홀인원 🎉";const d=s-p;
+  return d<=-3?"알바트로스 🤩":d===-2?"이글 🦅":d===-1?"버디 🐦":d===0?"파 👍":d===1?"보기":d===2?"더블보기":"+"+d+" (괜찮아요 😅)"}
+function rs(){
+  const i=G.cur;
+  $("hn").textContent=(i+1)+"번 홀";
+  $("par").innerHTML=[3,4,5].map(p=>`<button class="${G.par[i]===p?"":"alt"}" onclick="setPar(${p})">파${p}</button>`).join("");
+  $("st").textContent=G.s[i]||"-";
+  $("lab").textContent=G.s[i]?"지금 홀아웃하면 → "+lab(G.s[i],G.par[i]):lab(0,0);
+  let ts=0,tp=0;G.s.forEach((v,k)=>{if(v){ts+=v;tp+=G.par[k]}});
+  $("tot").textContent=ts?`${ts}타 (${fmt(ts-tp)})`:"0타";
+  $("grid").innerHTML=G.s.map((v,k)=>`<div class="c ${k===i?"on":""}" onclick="go(${k})"><small>${k+1}</small><b>${v||"·"}</b></div>`).join("");
+}
+function go(k){G.cur=Math.max(0,Math.min(17,k));sv();rs()}
+function setPar(p){G.par[G.cur]=p;sv();rs()}
+function inc(){const i=G.cur;G.s[i]=(G.s[i]||0)+1;sv();rs()}
+function dec(){const i=G.cur;if(G.s[i]>0)G.s[i]=G.s[i]>1?G.s[i]-1:0;sv();rs()}
+function newRound(){if(confirm("현재 스코어를 지우고 새 라운드를 시작할까요?")){G={par:Array(18).fill(4),s:Array(18).fill(0),cur:0};sv();rs()}}
+rs();
 </script>
 </body>
 </html>
