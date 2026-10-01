@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>그린 읽기</title>
+<link rel="apple-touch-icon" href="green-icon.png">
+<meta name="apple-mobile-web-app-title" content="그린 읽기">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+:root{--bg:#0b130e;--card:#142217;--tx:#e8f5e9;--sub:#81c784;--ac:#2e7d32;--acc:#66bb6a;--warn:#ffb74d;--ln:#223827;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,"Apple SD Gothic Neo",sans-serif;padding:16px;max-width:480px;margin:0 auto}
+h1{font-size:18px;margin:4px 0 12px;text-align:center;color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:14px;margin-bottom:12px;text-align:center}
+.lb{font-size:11px;color:var(--sub);font-weight:600;letter-spacing:.5px}
+.row{display:flex;gap:8px}
+.row>div{flex:1}
+input[type=number]{font:inherit;width:100%;padding:10px;border-radius:10px;border:1px solid var(--ln);background:#0d1a10;color:var(--tx);text-align:center;font-size:18px;margin-top:4px}
+button{font:inherit;border:0;border-radius:12px;padding:14px;width:100%;font-weight:700;background:var(--ac);color:#fff;margin-top:8px}
+button.alt{background:transparent;color:var(--sub);border:1px solid var(--ln)}
+button:disabled{opacity:.4}
+.big{font-size:30px;font-weight:800;color:#fff;line-height:1.3}
+.res2{font-size:16px;color:var(--acc);margin-top:6px;font-weight:700}
+.sm{font-size:12px;color:var(--sub);line-height:1.5;margin-top:6px}
+canvas{width:100%;height:auto;display:block;border-radius:10px;background:radial-gradient(circle at 50% 30%,#1b3320,#0d1a10)}
+label{font-size:13px;color:var(--sub);display:flex;align-items:center;gap:6px;justify-content:center;margin-top:6px}
+input[type=range]{width:100%}
+</style>
+</head>
+<body>
+<h1>⛳ 그린 읽기 (대략)</h1>
+
+<div class="card">
+  <div class="row">
+    <div><div class="lb">그린 스피드(m)</div><input id="spd" type="number" inputmode="decimal" step="0.1" value="3.0"></div>
+    <div><div class="lb">거리(걸음)</div><input id="stp" type="number" inputmode="numeric" value="10"></div>
+    <div><div class="lb">보폭(cm)</div><input id="len" type="number" inputmode="numeric" value="50"></div>
+  </div>
+  <div class="sm" id="dinfo"></div>
+</div>
+
+<div class="card">
+  <div class="lb">LIVE 기울기</div>
+  <div style="font-size:16px;margin-top:6px" id="live">센서를 켜 주세요</div>
+  <button id="sensor">📱 센서 켜기</button>
+  <label><input type="checkbox" id="fu"> 오르막/내리막이 반대로 나와요</label>
+  <label><input type="checkbox" id="fs"> 좌우가 반대로 나와요</label>
+  <div class="sm">방향 확인: 폰 윗면(홀 쪽) 모서리 밑에 동전을 끼우면 "홀 쪽이 높음(오르막)"으로, 오른쪽 모서리 밑에 끼우면 "오른쪽이 높음"으로 나와야 정상이에요. 반대면 위 체크를 켜세요.</div>
+</div>
+
+<div class="card">
+  <div class="sm" style="margin:0 0 4px">① 공 위치에 폰을 <b>화면이 위로 가게</b> 놓고, 폰 <b>윗면이 홀 쪽</b>을 향하게 하세요.</div>
+  <button id="m1">📏 측정 (2초, 가만히)</button>
+  <button class="alt" id="m2" disabled>🔁 180° 돌려서 보정 측정 (선택, 더 정확)</button>
+  <div class="sm" id="mstate"></div>
+</div>
+
+<div class="card" id="rcard" hidden>
+  <div class="lb">RESULT</div>
+  <div class="big" id="r1"></div>
+  <div class="res2" id="r2"></div>
+  <div class="sm" id="r3"></div>
+  <canvas id="cv" width="320" height="300"></canvas>
+  <div class="sm">노란 점선: 예상 공 경로 · 주황 화살표: 조준선 · 세로는 실제 거리, 가로는 확대해서 보여줘요</div>
+</div>
+
+<div class="card">
+  <div class="lb">휘어짐 보정 <span id="sv">1.0</span></div>
+  <input type="range" id="sens" min="0.5" max="1.5" step="0.05" value="1.0">
+  <div class="sm">실제로 쳐 보고 더 휘면 오른쪽으로, 덜 휘면 왼쪽으로 조절하세요. 기본값 1.0은 물리 계산 그대로예요.</div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const CUP=0.108; // 홀컵 지름(m)
+const DEG=Math.PI/180;
+
+/* ---------- 물리 계산 ---------- */
+function solve(D,Sm,su,ss,sens){
+  const af=1.83*1.83/(2*Sm);          // 마찰 감속 (스팀프미터 출발속도 1.83m/s 기준)
+  const g=9.81*5/7;                    // 구르는 공의 경사 가속
+  const ax=g*ss*sens, ay=-g*su*sens;   // ax: 오른쪽(+), ay: 앞쪽(오르막이면 -)
+  const vh=Math.sqrt(2*af*0.4);        // 홀 도착 속도: 못 들어가면 약 40cm 지나서 멈추는 세기
+  function sim(phi,v0,keep){
+    let x=0,y=0,vx=v0*Math.sin(phi),vy=v0*Math.cos(phi),t=0;const dt=0.01,pts=[[0,0]];
+    while(t<14){
+      const v=Math.hypot(vx,vy);if(v<0.03)break;
+      vx+=(ax-af*vx/v)*dt;vy+=(ay-af*vy/v)*dt;x+=vx*dt;y+=vy*dt;t+=dt;
+      if(keep)pts.push([x,y]);
+      if(y>=D)return{x,y,v:Math.hypot(vx,vy),hit:true,pts};
+      if(y<-1)break;
+    }
+    return{x,y,v:0,hit:false,pts};
+  }
+  function findV0(phi){
+    let lo=0.2,hi=8;
+    for(let i=0;i<28;i++){const m=(lo+hi)/2,r=sim(phi,m,false);((r.hit?r.v:0)<vh)?lo=m:hi=m}
+    return (lo+hi)/2;
+  }
+  let lo=-0.6,hi=0.6;
+  for(let i=0;i<24;i++){const m=(lo+hi)/2,r=sim(m,findV0(m),false);(r.hit&&r.x<0)?lo=m:hi=m}
+  const phi=(lo+hi)/2,v0=findV0(phi),fin=sim(phi,v0,true);
+  const off=D*Math.tan(phi);                       // 홀 거리에서 조준점의 좌우 위치(m, 오른쪽 +)
+  const Deq=(v0*v0-vh*vh)/(2*af);                  // 같은 힘으로 평지에서 굴러가는 거리
+  return{phi,off,v0,Deq,pts:fin.pts,hit:fin.hit};
+}
+
+/* ---------- 센서 ---------- */
+let beta=0,gamma=0,sampling=null,on=false;
+function ori(e){beta=e.beta||0;gamma=e.gamma||0;if(sampling)sampling.push([beta,gamma]);liveUpdate()}
+function sgn(){return{u:$('fu').checked?-1:1,s:$('fs').checked?-1:1}}
+function liveUpdate(){
+  if(Math.abs(beta)>45||Math.abs(gamma)>45){$('live').textContent='⚠️ 화면이 위로 가게 평평히 놓아주세요';return}
+  const k=sgn(),u=Math.tan(beta*DEG)*100*k.u,s=Math.tan(gamma*DEG)*100*k.s;
+  $('live').innerHTML=`홀 쪽이 <b>${Math.abs(u).toFixed(1)}%</b> ${u>=0?'높음 ⬆️':'낮음 ⬇️'}<br>오른쪽이 <b>${Math.abs(s).toFixed(1)}%</b> ${s>=0?'낮음 ➡️(오른쪽으로 흐름)':'높음 ⬅️(왼쪽으로 흐름)'}`;
+}
+$('sensor').onclick=async()=>{
+  try{
+    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+      const r=await DeviceOrientationEvent.requestPermission();if(r!=='granted'){$('live').textContent='센서 권한이 거부됐어요 (Safari 설정에서 허용해 주세요)';return}
+    }
+    window.addEventListener('deviceorientation',ori,true);on=true;$('sensor').textContent='🟢 센서 작동 중';
+  }catch(e){$('live').textContent='센서를 켤 수 없어요 (Safari에서 열어 주세요)'}
+};
+function med(a){const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]}
+function std(a){const m=a.reduce((x,y)=>x+y,0)/a.length;return Math.sqrt(a.reduce((x,y)=>x+(y-m)**2,0)/a.length)}
+function measure(btn,label){
+  return new Promise(res=>{
+    if(!on){$('mstate').textContent='먼저 센서를 켜 주세요';res(null);return}
+    sampling=[];let n=2;btn.disabled=true;btn.textContent=`측정 중… ${n}`;
+    const iv=setInterval(()=>{n--;btn.textContent=n>0?`측정 중… ${n}`:'계산 중…';if(n<=0){
+      clearInterval(iv);const s=sampling;sampling=null;btn.disabled=false;btn.textContent=label;
+      if(s.length<10){$('mstate').textContent='센서 값이 부족해요. 다시 시도해 주세요';res(null);return}
+      const b=s.map(x=>x[0]),g=s.map(x=>x[1]);
+      if(std(b)>0.4||std(g)>0.4){$('mstate').textContent='⚠️ 폰이 움직였어요. 가만히 두고 다시 측정해 주세요';res(null);return}
+      res({b:med(b),g:med(g)});
+    }},1000);
+  });
+}
+
+/* ---------- 결과 ---------- */
+let A=null,B=null;
+$('m1').onclick=async()=>{const r=await measure($('m1'),'📏 측정 (2초, 가만히)');if(!r)return;A=r;B=null;$('m2').disabled=false;$('mstate').textContent='측정 완료 ✅ (보정하면 더 정확해요)';calc()};
+$('m2').onclick=async()=>{const r=await measure($('m2'),'🔁 180° 돌려서 보정 측정 (선택, 더 정확)');if(!r)return;B=r;$('mstate').textContent='보정 측정 완료 ✅';calc()};
+['spd','stp','len','sens','fu','fs'].forEach(i=>$(i).addEventListener('input',()=>{save();info();if(A)calc();liveUpdate()}));
+function info(){$('dinfo').textContent=`거리 약 ${(num('stp')*num('len')/100).toFixed(1)} m · 1컵 = 10.8cm`;$('sv').textContent=$('sens').value}
+function num(i){return parseFloat($(i).value)||0}
+function save(){try{localStorage.setItem('gr',JSON.stringify({spd:$('spd').value,stp:$('stp').value,len:$('len').value,sens:$('sens').value,fu:$('fu').checked,fs:$('fs').checked}))}catch(e){}}
+try{const o=JSON.parse(localStorage.getItem('gr')||'null');if(o){$('spd').value=o.spd;$('stp').value=o.stp;$('len').value=o.len;$('sens').value=o.sens;$('fu').checked=!!o.fu;$('fs').checked=!!o.fs}}catch(e){}
+info();
+
+function calc(){
+  const k=sgn();
+  let u=A.b,s=A.g;
+  if(B){u=(A.b-B.b)/2;s=(A.g-B.g)/2}
+  const su=Math.max(-.08,Math.min(.08,Math.tan(u*DEG)*k.u)),ss=Math.max(-.08,Math.min(.08,Math.tan(s*DEG)*k.s));
+  const D=num('stp')*num('len')/100,Sm=Math.max(1.5,num('spd')),sens=num('sens');
+  if(D<=0.3){return}
+  const r=solve(D,Sm,su,ss,sens);
+  const cups=Math.abs(r.off)/CUP,rc=Math.round(cups*2)/2,side=r.off>0?'오른쪽':'왼쪽';
+  let t1;
+  if(rc<0.5)t1='🎯 거의 직선 (홀 중앙)';
+  else if(Math.abs(r.off)>=0.85)t1=`${side} 한 클럽 이상 (약 ${Math.round(cups)}컵)`;
+  else t1=`${side==='오른쪽'?'➡️':'⬅️'} 홀 ${side} ${rc}컵`;
+  $('r1').textContent=t1;
+  const steps=num('stp'),eq=r.Deq*100/num('len'),d=eq-steps;
+  let t2;
+  if(Math.abs(d)<0.5)t2='세기: 평소 그대로';
+  else if(d>0)t2=`세기: ${steps}걸음 → ${Math.round(eq)}걸음 거리 힘으로 (오르막)`;
+  else t2=`세기: ${steps}걸음 → ${Math.max(1,Math.round(eq))}걸음 거리 힘으로 (내리막)`;
+  $('r2').textContent=t2;
+  const up=su*100,sd=ss*100;
+  $('r3').textContent=`${Math.abs(up)<0.2?'앞뒤 평평':(up>0?'오르막 ':'내리막 ')+Math.abs(up).toFixed(1)+'%'} · ${Math.abs(sd)<0.2?'좌우 평평':(sd>0?'오른쪽으로 흐름 ':'왼쪽으로 흐름 ')+Math.abs(sd).toFixed(1)+'%'} · ${B?'보정됨':'보정 안 됨'} · 조준: 홀 ${Math.abs(r.off)<0.02?'중앙':side+' '+Math.round(Math.abs(r.off)*100)+'cm'}`;
+  $('rcard').hidden=false;draw(D,r);
+}
+function draw(D,r){
+  const c=$('cv'),x=c.getContext('2d'),W=c.width,H=c.height,cx=W/2,top=40,bot=H-30;
+  x.clearRect(0,0,W,H);
+  let mx=Math.max(Math.abs(r.off),0.4);r.pts.forEach(p=>{mx=Math.max(mx,Math.abs(p[0]))});
+  const ys=(bot-top)/D,xs=Math.min((W/2-24)/(mx*1.2),ys*4);
+  const P=p=>[cx+p[0]*xs,bot-p[1]*ys];
+  x.strokeStyle='rgba(129,199,132,.2)';x.lineWidth=1;x.beginPath();x.moveTo(cx,top-20);x.lineTo(cx,bot+10);x.stroke();
+  // 홀
+  const h=P([0,D]);x.beginPath();x.arc(h[0],h[1],8,0,7);x.fillStyle='#050805';x.fill();x.strokeStyle='#fff';x.lineWidth=2;x.stroke();
+  x.beginPath();x.moveTo(h[0],h[1]);x.lineTo(h[0],h[1]-24);x.strokeStyle='#fff';x.stroke();
+  x.fillStyle='#e53935';x.beginPath();x.moveTo(h[0],h[1]-24);x.lineTo(h[0]+14,h[1]-19);x.lineTo(h[0],h[1]-14);x.fill();
+  // 예상 경로
+  x.setLineDash([5,5]);x.strokeStyle='#ffeb3b';x.lineWidth=3;x.beginPath();
+  r.pts.forEach((p,i)=>{const q=P(p);i?x.lineTo(q[0],q[1]):x.moveTo(q[0],q[1])});x.stroke();x.setLineDash([]);
+  // 조준선 화살표
+  const b=P([0,0]),a=P([r.off,D]);x.strokeStyle='#ff7043';x.fillStyle='#ff7043';x.lineWidth=3;
+  x.beginPath();x.moveTo(b[0],b[1]);x.lineTo(a[0],a[1]);x.stroke();
+  const ang=Math.atan2(a[1]-b[1],a[0]-b[0]);x.beginPath();x.moveTo(a[0],a[1]);
+  x.lineTo(a[0]-14*Math.cos(ang-.45),a[1]-14*Math.sin(ang-.45));x.lineTo(a[0]-14*Math.cos(ang+.45),a[1]-14*Math.sin(ang+.45));x.fill();
+  x.beginPath();x.arc(a[0],a[1],5,0,7);x.stroke();
+  // 공
+  x.beginPath();x.arc(b[0],b[1],7,0,7);x.fillStyle='#fff';x.fill();
+}
+</script>
+</body>
+</html>
