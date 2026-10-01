@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>스윙 분석</title>
+<link rel="apple-touch-icon" href="swing-icon.png">
+<meta name="apple-mobile-web-app-title" content="스윙 분석">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--tx:#f8fafc;--sub:#94a3b8;--ac:#22c55e;--warn:#f59e0b;--bad:#ef4444;--ln:#334155;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,"Apple SD Gothic Neo",sans-serif;padding:16px;max-width:480px;margin:0 auto}
+h1{font-size:18px;margin:4px 0 12px;text-align:center}
+.cv{position:relative;background:#000;border-radius:16px;overflow:hidden;margin-bottom:12px;min-height:120px}
+canvas{display:block;width:100%;height:auto;max-height:58vh;object-fit:contain;margin:0 auto}
+video{display:none}
+.badge{position:absolute;top:10px;left:10px;right:10px;background:rgba(0,0,0,.7);padding:6px 12px;border-radius:20px;font-size:13px;font-weight:600;text-align:center}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:12px;text-align:center}
+.lb{font-size:11px;color:var(--sub);font-weight:600;letter-spacing:.5px}
+.val{font-size:30px;font-weight:800;font-style:italic;margin:4px 0;color:var(--ac)}
+.hint{font-size:12px;color:var(--sub)}
+button{font:inherit;border:0;border-radius:12px;padding:14px;width:100%;font-weight:700;background:var(--ac);color:#fff;margin-top:8px}
+button.alt{background:transparent;color:var(--sub);border:1px solid var(--ln)}
+ul{list-style:none;margin:0;padding:0;text-align:left;font-size:14px}
+li{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--ln)}
+.guide{background:var(--card);border-radius:12px;padding:12px;font-size:13px;color:var(--sub);line-height:1.6;margin-top:12px}
+.guide b{color:var(--tx)}
+</style>
+</head>
+<body>
+<h1>🏌️ 스윙 분석 (정면 촬영)</h1>
+
+<div class="cv">
+  <video id="v" playsinline muted></video>
+  <canvas id="c" width="480" height="270"></canvas>
+  <div class="badge" id="badge">카메라를 시작해 주세요</div>
+</div>
+
+<div class="grid">
+  <div class="card"><div class="lb">TEMPO</div><div class="val" id="tempo">--</div><div class="hint" id="tempoH">백스윙 : 다운스윙 (목표 약 3 : 1)</div></div>
+  <div class="card"><div class="lb">HEAD SWAY</div><div class="val" id="head">--</div><div class="hint">머리 좌우 최대 이동 (어깨너비 기준 대략값)</div></div>
+  <div class="card"><div class="lb">AVG TEMPO</div><div class="val" id="avg">--</div><div class="hint" id="cnt">0회 분석</div></div>
+  <div class="card"><div class="lb">STATE</div><div class="val" id="state" style="font-size:20px;font-style:normal">대기</div><div class="hint" id="fps">FPS --</div></div>
+</div>
+
+<div class="card" style="margin-bottom:8px"><div class="lb" style="margin-bottom:6px">최근 스윙</div><ul id="log"><li><span class="hint">아직 기록이 없어요</span></li></ul></div>
+
+<button id="start">🎥 카메라 시작</button>
+<button class="alt" id="flip">📷 후면 카메라 사용 중 (누르면 전면)</button>
+<button class="alt" id="reset">🔄 기록 초기화</button>
+
+<div class="guide">
+  <b>촬영 방법</b><br>
+  1. 폰을 삼각대에 <b>허리 높이</b>로 세우고, 타깃 방향과 <b>직각</b>(내 가슴이 보이는 쪽)으로 3~4m 떨어뜨리세요. 공이 날아가는 쪽 앞은 위험해요.<br>
+  2. <b>머리부터 발끝, 클럽 헤드까지</b> 다 보이게 하세요.<br>
+  3. 어드레스 자세로 <b>잠깐 멈추면</b> "삐" 소리가 나요. 그때 스윙하세요.<br>
+  4. 스윙이 끝나면 소리와 함께 결과가 표시돼요.<br>
+  <b>알아두세요:</b> 영상은 폰 안에서만 처리돼요. 템포는 카메라 프레임 수(FPS)에 따라 ±0.5 정도 오차가 날 수 있어요.
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const video=$('v'),cv=$('c'),ctx=cv.getContext('2d');
+
+/* ---------- 스윙 분석 로직 (좌표는 화면 높이 기준) ---------- */
+const AN={
+  st:'WAIT',hold:300,buf:[],A:null,sw:null,lastStill:0,doneAt:0,
+  reset(){this.st='WAIT';this.buf=[];this.A=null;this.sw=null},
+  feed(s){
+    const o={};
+    if(this.st==='DONE'){ if(s.t-this.doneAt>2500)this.reset(); else return o; }
+    if(this.st==='WAIT'){
+      this.buf.push(s);
+      while(this.buf.length&&s.t-this.buf[0].t>this.hold+150)this.buf.shift();
+      if(s.t-this.buf[0].t>=this.hold){
+        const xs=this.buf.map(b=>b.x),ys=this.buf.map(b=>b.y);
+        if(Math.max(...xs)-Math.min(...xs)<0.03&&Math.max(...ys)-Math.min(...ys)<0.03){
+          this.A={x:s.x,y:s.y,hx:s.hx,sh:s.sh};this.st='ADDRESS';this.lastStill=s.t;o.ev='address';
+        }
+      }
+      return o;
+    }
+    if(this.st==='ADDRESS'){
+      const d=Math.hypot(s.x-this.A.x,s.y-this.A.y);
+      if(d<0.02)this.lastStill=s.t;
+      else if(d>0.05){this.st='SWING';this.sw={t0:this.lastStill,minY:s.y,tTop:s.t,maxDev:Math.abs(s.hx-this.A.hx),dn:false,maxY:0,tLow:0};o.ev='start'}
+      return o;
+    }
+    if(this.st==='SWING'){
+      const A=this.A,w=this.sw;
+      w.maxDev=Math.max(w.maxDev,Math.abs(s.hx-A.hx));
+      if(s.y<w.minY){w.minY=s.y;w.tTop=s.t}
+      if(!w.dn&&s.y>w.minY+0.06){w.dn=true;w.maxY=s.y;w.tLow=s.t}
+      if(w.dn&&s.y>w.maxY){w.maxY=s.y;w.tLow=s.t}
+      if(w.dn&&s.y<w.maxY-0.04&&w.maxY>A.y-0.12){
+        const bs=(w.tTop-w.t0)/1000,ds=(w.tLow-w.tTop)/1000,rise=A.y-w.minY;
+        this.st='DONE';this.doneAt=s.t;
+        if(rise<0.12){o.ev='fail';o.why='백스윙이 작아서 인식이 어려워요'}
+        else if(bs<0.3||bs>2.5||ds<0.1||ds>1.2){o.ev='fail';o.why='타이밍이 비정상이에요. 다시 해보세요'}
+        else{o.ev='done';o.tempo=bs/ds;o.bs=bs;o.ds=ds;o.head=w.maxDev/A.sh*40}
+      }else if(s.t-w.t0>4000){this.st='DONE';this.doneAt=s.t;o.ev='fail';o.why='스윙을 인식하지 못했어요'}
+    }
+    return o;
+  }
+};
+
+/* ---------- UI ---------- */
+let swings=[],lastT=0,fpsAvg=0;
+function badge(t,c){const b=$('badge');b.textContent=t;b.style.color=c||'#22c55e'}
+function beep(f,d){try{window._ac=window._ac||new(window.AudioContext||window.webkitAudioContext)();const a=window._ac,o=a.createOscillator(),g=a.createGain();o.frequency.value=f;g.gain.value=.2;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+d)}catch(e){}}
+function showResult(o){
+  swings.unshift(o);
+  $('tempo').textContent=o.tempo.toFixed(1)+' : 1';
+  $('tempo').style.color=(o.tempo>=2.5&&o.tempo<=3.5)?'#22c55e':'#f59e0b';
+  $('tempoH').textContent=`백스윙 ${o.bs.toFixed(2)}초 · 다운스윙 ${o.ds.toFixed(2)}초`;
+  $('head').textContent=o.head.toFixed(1)+' cm';
+  $('head').style.color=o.head<=5?'#22c55e':'#f59e0b';
+  const avg=swings.reduce((a,b)=>a+b.tempo,0)/swings.length;
+  $('avg').textContent=avg.toFixed(1)+' : 1';
+  $('cnt').textContent=swings.length+'회 분석';
+  $('log').innerHTML=swings.slice(0,6).map((s,i)=>`<li><span>#${swings.length-i}</span><span>템포 ${s.tempo.toFixed(1)}:1 · 머리 ${s.head.toFixed(1)}cm</span></li>`).join('');
+}
+function handle(o){
+  if(o.ev==='address'){$('state').textContent='어드레스 ✅';badge('🟢 인식 완료! 스윙하세요');beep(880,.15)}
+  else if(o.ev==='start'){$('state').textContent='스윙 중';badge('⛳ 스윙 분석 중…')}
+  else if(o.ev==='done'){$('state').textContent='완료';badge('✅ 분석 완료');showResult(o);beep(660,.1);setTimeout(()=>beep(990,.15),160)}
+  else if(o.ev==='fail'){$('state').textContent='실패';badge('⚠️ '+o.why,'#f59e0b');beep(220,.3)}
+}
+const LINES=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
+function onResults(r){
+  const W=video.videoWidth,H=video.videoHeight;
+  if(!W)return;
+  if(cv.width!==W){cv.width=W;cv.height=H}
+  ctx.drawImage(r.image,0,0,W,H);
+  const L=r.poseLandmarks;
+  if(!L){badge('🔴 몸이 안 보여요. 전신이 나오게 서주세요','#ef4444');return}
+  if(![11,12,15,16].every(i=>L[i].visibility>0.5)){badge('🟡 어깨와 손목이 잘 보이게 해주세요','#f59e0b');return}
+  const t=performance.now();
+  if(lastT){const f=1000/(t-lastT);fpsAvg=fpsAvg?fpsAvg*.9+f*.1:f;$('fps').textContent='FPS '+Math.round(fpsAvg)+(fpsAvg<20?' (낮음)':'')}
+  lastT=t;
+  const sh=Math.hypot((L[11].x-L[12].x)*W,(L[11].y-L[12].y)*H);
+  const hv=(L[7].visibility>0.4&&L[8].visibility>0.4)?{x:(L[7].x+L[8].x)/2,y:(L[7].y+L[8].y)/2}:L[0];
+  const s={t,x:(L[15].x+L[16].x)/2*W/H,y:(L[15].y+L[16].y)/2,hx:hv.x*W,sh};
+  handle(AN.feed(s));
+  // 그리기
+  ctx.lineWidth=3;ctx.strokeStyle='rgba(34,197,94,.9)';
+  LINES.forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(L[a].x*W,L[a].y*H);ctx.lineTo(L[b].x*W,L[b].y*H);ctx.stroke()});
+  ctx.fillStyle='#ef4444';ctx.beginPath();ctx.arc(hv.x*W,hv.y*H,8,0,7);ctx.fill();
+  ctx.fillStyle='#facc15';[15,16].forEach(i=>{ctx.beginPath();ctx.arc(L[i].x*W,L[i].y*H,6,0,7);ctx.fill()});
+  if(AN.A){
+    ctx.setLineDash([8,6]);ctx.lineWidth=2;
+    ctx.strokeStyle='rgba(239,68,68,.7)';ctx.beginPath();ctx.moveTo(AN.A.hx,0);ctx.lineTo(AN.A.hx,H);ctx.stroke();
+    ctx.strokeStyle='rgba(250,204,21,.6)';ctx.beginPath();ctx.moveTo(0,AN.A.y*H);ctx.lineTo(W,AN.A.y*H);ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+/* ---------- 카메라 ---------- */
+let pose=null,stream=null,running=false,busy=false,facing='environment';
+async function startCam(){
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:60}},audio:false});
+  video.srcObject=stream;await video.play();
+}
+async function loop(){
+  if(!running)return;
+  if(video.readyState>=2&&!busy){busy=true;try{await pose.send({image:video})}catch(e){}busy=false}
+  requestAnimationFrame(loop);
+}
+$('start').onclick=async()=>{
+  if(running)return;
+  if(typeof Pose==='undefined'){badge('인터넷 연결을 확인하고 새로고침해 주세요','#ef4444');return}
+  try{
+    badge('AI 모델 불러오는 중… (처음엔 몇 초 걸려요)','#94a3b8');
+    await startCam();
+    pose=new Pose({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${f}`});
+    pose.setOptions({modelComplexity:1,smoothLandmarks:false,enableSegmentation:false,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+    pose.onResults(onResults);
+    running=true;AN.reset();loop();
+    $('start').textContent='🟢 분석 작동 중';
+    try{navigator.wakeLock&&navigator.wakeLock.request('screen')}catch(e){}
+    badge('전신이 보이게 서서 어드레스 자세로 멈춰 보세요','#94a3b8');
+  }catch(e){badge('카메라 권한을 허용해 주세요 (Safari에서 열어야 해요)','#ef4444')}
+};
+$('flip').onclick=async()=>{
+  facing=facing==='environment'?'user':'environment';
+  $('flip').textContent=facing==='environment'?'📷 후면 카메라 사용 중 (누르면 전면)':'🤳 전면 카메라 사용 중 (누르면 후면)';
+  if(running){try{await startCam();AN.reset()}catch(e){}}
+};
+$('reset').onclick=()=>{
+  swings=[];AN.reset();
+  ['tempo','head','avg'].forEach(i=>{$(i).textContent='--';$(i).style.color='#22c55e'});
+  $('cnt').textContent='0회 분석';$('state').textContent='대기';
+  $('log').innerHTML='<li><span class="hint">아직 기록이 없어요</span></li>';
+};
+</script>
+</body>
+</html>
